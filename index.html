@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Air Station 실시간 모니터링</title>
+  <style>
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Pretendard", sans-serif; }
+    body { background: #f3f4f6; margin: 0; padding: 20px 16px; color: #1f2937; }
+    
+    .container { max-width: 480px; margin: 0 auto; }
+    
+    header { text-align: center; margin-bottom: 18px; }
+    header h2 { margin: 0; font-size: 20px; font-weight: 800; color: #111827; }
+    header p { margin: 4px 0 0; font-size: 12px; color: #6b7280; }
+
+    /* 상단 종합 공기질 상태 카드 */
+    .summary-card {
+      background: #ffffff;
+      border-radius: 16px;
+      padding: 20px;
+      text-align: center;
+      margin-bottom: 16px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+      border-top: 6px solid #10b981;
+      transition: all 0.3s ease;
+    }
+    .summary-title { font-size: 13px; font-weight: 600; color: #6b7280; margin-bottom: 6px; }
+    .summary-status { font-size: 26px; font-weight: 800; color: #10b981; margin-bottom: 6px; }
+    .summary-desc { font-size: 13px; color: #4b5563; margin: 0; }
+
+    /* 센서 카드 그리드 */
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .card {
+      background: #ffffff;
+      border-radius: 14px;
+      padding: 18px 12px;
+      text-align: center;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .label { font-size: 13px; color: #6b7280; font-weight: 600; margin-bottom: 8px; }
+    .val-box { margin-bottom: 10px; }
+    .val { font-size: 26px; font-weight: 800; color: #111827; }
+    .unit { font-size: 12px; color: #9ca3af; font-weight: 500; margin-left: 2px; }
+
+    /* 신호등 상태 배지 */
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .good { background: #d1fae5; color: #065f46; }
+    .moderate { background: #fef3c7; color: #92400e; }
+    .bad { background: #fee2e2; color: #991b1b; }
+    .wait { background: #f3f4f6; color: #6b7280; }
+
+    .footer-time {
+      text-align: center;
+      font-size: 11px;
+      color: #9ca3af;
+      margin-top: 18px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <h2>🌿 실내 공기질 모니터링</h2>
+      <p>Air Quality Sensor Station</p>
+    </header>
+
+    <!-- 종합 상태 배너 -->
+    <div class="summary-card" id="summaryCard">
+      <div class="summary-title">현재 실내 공기질 종합 상태</div>
+      <div class="summary-status" id="overallStatus">측정 대기 중</div>
+      <p class="summary-desc" id="overallDesc">센서 데이터를 불러오고 있습니다.</p>
+    </div>
+
+    <!-- 개별 센서 카드 -->
+    <div class="grid">
+      <div class="card">
+        <div class="label">온도 (BME280)</div>
+        <div class="val-box"><span class="val" id="temp">--</span><span class="unit">°C</span></div>
+        <span class="badge wait" id="tempBadge">대기 중</span>
+      </div>
+
+      <div class="card">
+        <div class="label">습도 (BME280)</div>
+        <div class="val-box"><span class="val" id="humi">--</span><span class="unit">%</span></div>
+        <span class="badge wait" id="humiBadge">대기 중</span>
+      </div>
+
+      <div class="card">
+        <div class="label">이산화탄소 (CO₂)</div>
+        <div class="val-box"><span class="val" id="co2">--</span><span class="unit">ppm</span></div>
+        <span class="badge wait" id="co2Badge">대기 중</span>
+      </div>
+
+      <div class="card">
+        <div class="label">초미세먼지 (PM2.5)</div>
+        <div class="val-box"><span class="val" id="pm25">--</span><span class="unit">㎍/㎥</span></div>
+        <span class="badge wait" id="pm25Badge">대기 중</span>
+      </div>
+
+      <div class="card" style="grid-column: span 2;">
+        <div class="label">포름알데히드 / 유해가스 (HCHO)</div>
+        <div class="val-box"><span class="val" id="hcho">--</span><span class="unit">㎎/㎥</span></div>
+        <span class="badge wait" id="hchoBadge">대기 중</span>
+      </div>
+    </div>
+
+    <div class="footer-time" id="lastUpdate">마지막 업데이트: --:--:--</div>
+  </div>
+
+  <script>
+    const dbUrl = "https://air-station-capstone-default-rtdb.firebaseio.com/.json";
+
+    function setBadge(elementId, level, text) {
+      const el = document.getElementById(elementId);
+      el.className = "badge " + level;
+      el.innerText = text;
+    }
+
+    async function updateDashboard() {
+      try {
+        const response = await fetch(dbUrl);
+        const data = await response.json();
+        
+        if (data) {
+          let badCount = 0;
+          let modCount = 0;
+
+          // 1. 온도 판정 (쾌적: 18~26°C)
+          if (data.temp !== undefined) {
+            const t = Number(data.temp);
+            document.getElementById('temp').innerText = t;
+            if (t >= 18 && t <= 26) { setBadge('tempBadge', 'good', '적정'); }
+            else if ((t >= 15 && t < 18) || (t > 26 && t <= 29)) { setBadge('tempBadge', 'moderate', '보통'); modCount++; }
+            else { setBadge('tempBadge', 'bad', '주의'); badCount++; }
+          }
+
+          // 2. 습도 판정 (쾌적: 40~60%)
+          if (data.humi !== undefined) {
+            const h = Number(data.humi);
+            document.getElementById('humi').innerText = h;
+            if (h >= 40 && h <= 60) { setBadge('humiBadge', 'good', '쾌적'); }
+            else if ((h >= 30 && h < 40) || (h > 60 && h <= 70)) { setBadge('humiBadge', 'moderate', '보통'); modCount++; }
+            else { setBadge('humiBadge', 'bad', '건조/다습'); badCount++; }
+          }
+
+          // 3. CO2 판정 (좋음: ~800, 보통: ~1000, 나쁨: 1000 초과)
+          if (data.co2 !== undefined) {
+            const c = Number(data.co2);
+            document.getElementById('co2').innerText = c;
+            if (c <= 800) { setBadge('co2Badge', 'good', '좋음'); }
+            else if (c <= 1000) { setBadge('co2Badge', 'moderate', '보통'); modCount++; }
+            else { setBadge('co2Badge', 'bad', '환기 필요'); badCount++; }
+          }
+
+          // 4. 미세먼지 PM2.5 판정 (좋음: ~15, 보통: ~35, 나쁨: 35 초과)
+          if (data.pm25 !== undefined) {
+            const p = Number(data.pm25);
+            document.getElementById('pm25').innerText = p;
+            if (p <= 15) { setBadge('pm25Badge', 'good', '좋음'); }
+            else if (p <= 35) { setBadge('pm25Badge', 'moderate', '보통'); modCount++; }
+            else { setBadge('pm25Badge', 'bad', '나쁨'); badCount++; }
+          }
+
+          // 5. 유해가스 HCHO 판정 (좋음: ~0.05, 보통: ~0.10, 나쁨: 0.10 초과)
+          if (data.hcho !== undefined) {
+            const f = Number(data.hcho);
+            document.getElementById('hcho').innerText = f;
+            if (f <= 0.05) { setBadge('hchoBadge', 'good', '안전'); }
+            else if (f <= 0.10) { setBadge('hchoBadge', 'moderate', '보통'); modCount++; }
+            else { setBadge('hchoBadge', 'bad', '환기 필요'); badCount++; }
+          }
+
+          // 상단 종합 상태 업데이트
+          const card = document.getElementById('summaryCard');
+          const statusEl = document.getElementById('overallStatus');
+          const descEl = document.getElementById('overallDesc');
+
+          if (badCount > 0) {
+            card.style.borderTopColor = "#ef4444";
+            statusEl.style.color = "#ef4444";
+            statusEl.innerText = "환기 권장 (나쁨)";
+            descEl.innerText = "일부 공기질 수치가 기준치를 초과했습니다. 창문을 열어 환기해 주세요.";
+          } else if (modCount > 0) {
+            card.style.borderTopColor = "#f59e0b";
+            statusEl.style.color = "#d97706";
+            statusEl.innerText = "보통";
+            descEl.innerText = "무난한 실내 환경입니다. 주기적인 환기를 권장합니다.";
+          } else {
+            card.style.borderTopColor = "#10b981";
+            statusEl.style.color = "#10b981";
+            statusEl.innerText = "쾌적함 (좋음)";
+            descEl.innerText = "모든 공기질 지표가 안전하고 쾌적한 범위 내에 있습니다.";
+          }
+
+          // 업데이트 시간 표시
+          const now = new Date();
+          document.getElementById('lastUpdate').innerText = "마지막 업데이트: " + now.toLocaleTimeString();
+        }
+      } catch (err) {
+        console.error("데이터 수신 오류:", err);
+      }
+    }
+
+    updateDashboard();
+    setInterval(updateDashboard, 2000);
+  </script>
+</body>
+</html>
