@@ -8,29 +8,61 @@
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
     body { background: #f4f6f8; color: #222; padding: 20px 16px 32px; display: flex; justify-content: center; }
     .container { width: 100%; max-width: 480px; }
-    header { text-align: center; margin-bottom: 20px; }
+
+    header { text-align: center; margin-bottom: 14px; }
     header h1 { font-size: 22px; font-weight: 800; color: #1f2937; }
     header p { font-size: 13px; color: #6b7280; margin-top: 4px; }
+
+    /* 기기 실시간 연결 상태 표시 바 */
+    .conn-wrap { display: flex; justify-content: center; margin-bottom: 14px; }
+    .conn-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 14px; border-radius: 999px; font-size: 12px; font-weight: 700;
+      background: #e5e7eb; color: #374151;
+    }
+    .conn-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: #9ca3af; }
+    .conn-pill.online { background: #d1fae5; color: #065f46; }
+    .conn-pill.online .dot { background: #10b981; }
+    .conn-pill.offline { background: #fee2e2; color: #991b1b; }
+    .conn-pill.offline .dot { background: #ef4444; animation: blink 1s infinite; }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.25; }
+    }
+
+    /* 재연결 복구 알림 바 */
+    .recovery-alert {
+      display: none;
+      background: #ecfdf5; border: 1px solid #6ee7b7; color: #065f46;
+      border-radius: 12px; padding: 10px 14px; margin-bottom: 12px;
+      font-size: 13px; font-weight: 600; text-align: center;
+    }
+    .recovery-alert.show { display: block; }
 
     .banner {
       background: #fff; border-radius: 16px; padding: 22px 16px; text-align: center;
       box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 16px;
-      border-top: 6px solid #10b981; transition: border-color 0.3s;
+      border-top: 6px solid #10b981; transition: border-color 0.3s, background 0.3s;
     }
     .banner.good { border-top-color: #10b981; }
     .banner.warn { border-top-color: #f59e0b; }
     .banner.bad  { border-top-color: #ef4444; }
     .banner.wait { border-top-color: #3b82f6; }
+    .banner.offline { border-top-color: #dc2626; background: #fef2f2; }
 
     .banner-label { font-size: 13px; color: #6b7280; margin-bottom: 6px; }
-    .banner-status { font-size: 24px; font-weight: 800; margin-bottom: 8px; }
+    .banner-status { font-size: 23px; font-weight: 800; margin-bottom: 8px; }
     .banner.good .banner-status { color: #059669; }
     .banner.warn .banner-status { color: #d97706; }
     .banner.bad  .banner-status { color: #dc2626; }
     .banner.wait .banner-status { color: #2563eb; }
-    .banner-desc { font-size: 13px; color: #4b5563; line-height: 1.4; }
+    .banner.offline .banner-status { color: #b91c1c; }
+    .banner-desc { font-size: 13px; color: #4b5563; line-height: 1.45; }
 
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; transition: opacity 0.3s; }
+    .grid.dimmed { opacity: 0.48; }
+
     .card {
       background: #fff; border-radius: 16px; padding: 18px 14px; text-align: center;
       box-shadow: 0 4px 12px rgba(0,0,0,0.05);
@@ -49,7 +81,7 @@
     .badge.bad  { background: #fee2e2; color: #991b1b; }
     .badge.wait { background: #dbeafe; color: #1e40af; }
 
-    .footer { text-align: center; font-size: 12px; color: #9ca3af; margin-top: 18px; }
+    .footer { text-align: center; font-size: 12px; color: #9ca3af; margin-top: 18px; line-height: 1.6; }
   </style>
 </head>
 <body>
@@ -59,13 +91,26 @@
       <p>Air Quality Sensor Station</p>
     </header>
 
+    <!-- Wi-Fi 실시간 연결 상태 표시 -->
+    <div class="conn-wrap">
+      <div id="conn-pill" class="conn-pill">
+        <span class="dot"></span>
+        <span id="conn-text">연결 상태 확인 중...</span>
+      </div>
+    </div>
+
+    <!-- Wi-Fi 재연결 및 복구 완료 알림 -->
+    <div id="recovery-alert" class="recovery-alert">
+      ✅ Wi-Fi가 다시 연결되어 누락 데이터가 자동 복구되었습니다.
+    </div>
+
     <div id="banner" class="banner wait">
       <div class="banner-label">현재 실내 공기질 종합 상태</div>
       <div id="banner-status" class="banner-status">데이터 불러오는 중...</div>
       <div id="banner-desc" class="banner-desc">센서와 연결을 확인하고 있습니다.</div>
     </div>
 
-    <div class="grid">
+    <div id="cards-grid" class="grid">
       <div class="card">
         <div class="card-title">온도 (BME280)</div>
         <div class="card-value"><b id="temp-val">--</b><span>°C</span></div>
@@ -103,6 +148,15 @@
   <script>
     const DB_URL = "https://air-station-capstone-default-rtdb.firebaseio.com/.json";
 
+    // 30초(전송주기 10초 × 3회) 이상 새 데이터가 없으면 Wi-Fi 끊김으로 판정
+    const OFFLINE_LIMIT_MS = 30000;
+
+    let lastSignature = null;
+    let lastChangedAt = Date.now();
+    let hasConfirmedLive = false;
+    let wasOffline = false;
+    let recoveryNoticeUntil = 0;
+
     function isWarmingUp(stateText) {
       if (!stateText) return false;
       return stateText.includes("예열") || stateText.includes("안정화") || stateText.includes("워밍업");
@@ -114,31 +168,85 @@
       el.className = "badge " + level;
     }
 
+    // "2026-11-25 17:05:10" 문자열을 밀리초 시각으로 안전하게 변환 (아이폰 사파리 호환)
+    function parseDeviceTimestamp(tsStr) {
+      if (!tsStr || typeof tsStr !== "string") return null;
+      const match = tsStr.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/);
+      if (!match) return null;
+      const d = new Date(
+        Number(match[1]), Number(match[2]) - 1, Number(match[3]),
+        Number(match[4]), Number(match[5]), Number(match[6])
+      );
+      return isNaN(d.getTime()) ? null : d.getTime();
+    }
+
+    function formatElapsed(ms) {
+      const totalSec = Math.max(0, Math.floor(ms / 1000));
+      if (totalSec < 60) return totalSec + "초";
+      const min = Math.floor(totalSec / 60);
+      const sec = totalSec % 60;
+      return min + "분 " + sec + "초";
+    }
+
+    function setConnPill(isOnline, text) {
+      const pill = document.getElementById("conn-pill");
+      const label = document.getElementById("conn-text");
+      pill.className = "conn-pill " + (isOnline ? "online" : "offline");
+      label.textContent = text;
+    }
+
     async function fetchData() {
+      const banner = document.getElementById("banner");
+      const bStatus = document.getElementById("banner-status");
+      const bDesc = document.getElementById("banner-desc");
+      const grid = document.getElementById("cards-grid");
+      const recoveryEl = document.getElementById("recovery-alert");
+
       try {
         const res = await fetch(DB_URL);
+        if (!res.ok) throw new Error("HTTP " + res.status);
         const data = await res.json();
         if (!data) return;
 
+        const now = Date.now();
+
+        // 1. 새 데이터 수신 여부 체크 (seq 또는 측정값 변화 감지)
+        const currentSignature = JSON.stringify({
+          seq: data.seq,
+          timestamp: data.timestamp,
+          temp: data.temp,
+          humi: data.humi,
+          co2: data.co2,
+          pm25: data.pm25,
+          hcho: data.hcho
+        });
+
+        if (lastSignature === null) {
+          lastSignature = currentSignature;
+          lastChangedAt = now;
+        } else if (currentSignature !== lastSignature) {
+          lastSignature = currentSignature;
+          lastChangedAt = now;
+          hasConfirmedLive = true;
+        }
+
+        // 2. 센서 값 카드 먼저 최신화 (끊겼을 때도 마지막 측정값은 흐리게 표시)
         let badCount = 0;
         let warnCount = 0;
         let waitCount = 0;
 
-        // 1. 온도
         if (data.temp !== undefined) {
           document.getElementById("temp-val").textContent = Number(data.temp).toFixed(1);
           if (data.temp >= 18 && data.temp <= 26) setBadge("temp-badge", "적정", "good");
           else { setBadge("temp-badge", "주의", "bad"); warnCount++; }
         }
 
-        // 2. 습도
         if (data.humi !== undefined) {
           document.getElementById("humi-val").textContent = Math.round(data.humi);
           if (data.humi >= 40 && data.humi <= 60) setBadge("humi-badge", "적정", "good");
           else { setBadge("humi-badge", "건조/다습", "bad"); warnCount++; }
         }
 
-        // 3. 이산화탄소 (안정화 체크 포함)
         if (isWarmingUp(data.co2_state)) {
           document.getElementById("co2-val").textContent = "--";
           setBadge("co2-badge", data.co2_state, "wait");
@@ -150,7 +258,6 @@
           else { setBadge("co2-badge", "환기 필요", "bad"); badCount++; }
         }
 
-        // 4. 초미세먼지 (워밍업 체크 포함)
         if (isWarmingUp(data.pm_state)) {
           document.getElementById("pm25-val").textContent = "--";
           setBadge("pm25-badge", data.pm_state, "wait");
@@ -162,7 +269,6 @@
           else { setBadge("pm25-badge", "나쁨", "bad"); badCount++; }
         }
 
-        // 5. 포름알데히드 (예열·안정화 체크 포함)
         if (isWarmingUp(data.hcho_state)) {
           document.getElementById("hcho-val").textContent = "--";
           setBadge("hcho-badge", data.hcho_state, "wait");
@@ -174,11 +280,68 @@
           else { setBadge("hcho-badge", "환기 필요", "bad"); badCount++; }
         }
 
-        // 종합 상태 배너 업데이트
-        const banner = document.getElementById("banner");
-        const bStatus = document.getElementById("banner-status");
-        const bDesc = document.getElementById("banner-desc");
+        // 3. Wi-Fi 끊김(오프라인) 판정
+        const deviceTsMs = parseDeviceTimestamp(data.timestamp);
+        const sinceLastChangeMs = now - lastChangedAt;
+        const isRecentlyChanged = hasConfirmedLive && (sinceLastChangeMs <= OFFLINE_LIMIT_MS);
 
+        let isDeviceOffline = false;
+        let offlineDurationMs = sinceLastChangeMs;
+
+        if (!isRecentlyChanged) {
+          if (deviceTsMs !== null && (now - deviceTsMs) > OFFLINE_LIMIT_MS) {
+            isDeviceOffline = true;
+            offlineDurationMs = now - deviceTsMs;
+          } else if (sinceLastChangeMs > OFFLINE_LIMIT_MS) {
+            isDeviceOffline = true;
+            offlineDurationMs = sinceLastChangeMs;
+          }
+        }
+
+        // 하단 시각 표시
+        const deviceTimeLabel = data.timestamp ? data.timestamp : "기록 없음";
+        const nowStr = new Date().toLocaleTimeString("ko-KR");
+        document.getElementById("last-update").innerHTML =
+          "기기 마지막 전송: " + deviceTimeLabel + "<br>화면 확인 시각: " + nowStr;
+
+        // 4. Wi-Fi 끊김 상태일 때 화면 처리
+        if (isDeviceOffline) {
+          wasOffline = true;
+          recoveryEl.classList.remove("show");
+          grid.classList.add("dimmed");
+          setConnPill(false, "기기 오프라인 (Wi-Fi 끊김) · " + formatElapsed(offlineDurationMs) + " 경과");
+
+          banner.className = "banner offline";
+          bStatus.textContent = "⚠️ 장치 Wi-Fi 연결 끊김";
+          bDesc.textContent =
+            formatElapsed(offlineDurationMs) +
+            "째 새 데이터가 수신되지 않고 있습니다. Wi-Fi 재연결 시 보드 내부 버퍼에서 누락 데이터가 자동 복구됩니다.";
+          return;
+        }
+
+        // 5. 정상 연결 상태일 때 화면 처리
+        grid.classList.remove("dimmed");
+
+        // 끊겼다가 방금 다시 연결되었거나, 아두이노 status에 '다시 연결'이 들어온 경우 15초간 복구 안내 표시
+        if (wasOffline || (data.status && String(data.status).includes("다시 연결"))) {
+          if (wasOffline) {
+            recoveryNoticeUntil = now + 15000;
+            wasOffline = false;
+          } else if (now > recoveryNoticeUntil) {
+            recoveryNoticeUntil = now + 10000;
+          }
+        }
+
+        if (now < recoveryNoticeUntil) {
+          recoveryEl.classList.add("show");
+        } else {
+          recoveryEl.classList.remove("show");
+        }
+
+        const liveSec = Math.floor(sinceLastChangeMs / 1000);
+        setConnPill(true, "기기 온라인 · 실시간 수신 중 (" + liveSec + "초 전)");
+
+        // 종합 상태 배너 업데이트
         if (badCount > 0) {
           banner.className = "banner bad";
           bStatus.textContent = "환기 권장 (나쁨)";
@@ -196,12 +359,13 @@
           bStatus.textContent = "쾌적함 (좋음)";
           bDesc.textContent = "모든 실내 공기질 지표가 안전하고 쾌적한 상태입니다.";
         }
-
-        // 업데이트 시각 표시
-        const timeStr = new Date().toLocaleTimeString("ko-KR");
-        document.getElementById("last-update").textContent = "마지막 업데이트: " + timeStr;
       } catch (err) {
         console.error("데이터 로드 실패:", err);
+        grid.classList.add("dimmed");
+        setConnPill(false, "네트워크 오류 · 서버 접속 불가");
+        banner.className = "banner offline";
+        bStatus.textContent = "⚠️ 네트워크 연결 오류";
+        bDesc.textContent = "스마트폰 또는 PC의 인터넷 연결을 확인해 주세요.";
       }
     }
 
