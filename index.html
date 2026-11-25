@@ -65,11 +65,13 @@
 
     .card {
       background: #fff; border-radius: 16px; padding: 18px 14px; text-align: center;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.05); border: 2px solid transparent;
     }
+    .card.err-card { border-color: #fca5a5; background: #fef2f2; }
     .card.full { grid-column: 1 / -1; }
     .card-title { font-size: 13px; color: #4b5563; font-weight: 600; margin-bottom: 10px; }
     .card-value { font-size: 28px; font-weight: 800; color: #111827; margin-bottom: 10px; }
+    .card.err-card .card-value { color: #dc2626; }
     .card-value span { font-size: 13px; font-weight: 500; color: #6b7280; margin-left: 2px; }
 
     .badge {
@@ -111,31 +113,31 @@
     </div>
 
     <div id="cards-grid" class="grid">
-      <div class="card">
+      <div class="card" id="temp-card">
         <div class="card-title">온도 (BME280)</div>
         <div class="card-value"><b id="temp-val">--</b><span>°C</span></div>
         <div id="temp-badge" class="badge wait">대기중</div>
       </div>
 
-      <div class="card">
+      <div class="card" id="humi-card">
         <div class="card-title">습도 (BME280)</div>
         <div class="card-value"><b id="humi-val">--</b><span>%</span></div>
         <div id="humi-badge" class="badge wait">대기중</div>
       </div>
 
-      <div class="card">
+      <div class="card" id="co2-card">
         <div class="card-title">이산화탄소 (CO₂)</div>
         <div class="card-value"><b id="co2-val">--</b><span>ppm</span></div>
         <div id="co2-badge" class="badge wait">대기중</div>
       </div>
 
-      <div class="card">
+      <div class="card" id="pm25-card">
         <div class="card-title">초미세먼지 (PM2.5)</div>
         <div class="card-value"><b id="pm25-val">--</b><span>㎍/㎥</span></div>
         <div id="pm25-badge" class="badge wait">대기중</div>
       </div>
 
-      <div class="card full">
+      <div class="card full" id="hcho-card">
         <div class="card-title">포름알데히드 / 유해가스 (HCHO)</div>
         <div class="card-value"><b id="hcho-val">--</b><span>㎎/㎥</span></div>
         <div id="hcho-badge" class="badge wait">대기중</div>
@@ -147,8 +149,6 @@
 
   <script>
     const DB_URL = "https://air-station-capstone-default-rtdb.firebaseio.com/.json";
-
-    // 30초(전송주기 10초 × 3회) 이상 새 데이터가 없으면 Wi-Fi 끊김으로 판정
     const OFFLINE_LIMIT_MS = 30000;
 
     let lastSignature = null;
@@ -168,7 +168,13 @@
       el.className = "badge " + level;
     }
 
-    // "2026-11-25 17:05:10" 문자열을 밀리초 시각으로 안전하게 변환 (아이폰 사파리 호환)
+    function setCardError(cardId, isErr) {
+      const card = document.getElementById(cardId);
+      if (!card) return;
+      if (isErr) card.classList.add("err-card");
+      else card.classList.remove("err-card");
+    }
+
     function parseDeviceTimestamp(tsStr) {
       if (!tsStr || typeof tsStr !== "string") return null;
       const match = tsStr.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/);
@@ -210,15 +216,17 @@
 
         const now = Date.now();
 
-        // 1. 새 데이터 수신 여부 체크 (seq 또는 측정값 변화 감지)
         const currentSignature = JSON.stringify({
-          seq: data.seq,
           timestamp: data.timestamp,
           temp: data.temp,
           humi: data.humi,
           co2: data.co2,
           pm25: data.pm25,
-          hcho: data.hcho
+          hcho: data.hcho,
+          bme_ok: data.bme_ok,
+          co2_ok: data.co2_ok,
+          pm_ok: data.pm_ok,
+          hcho_ok: data.hcho_ok
         });
 
         if (lastSignature === null) {
@@ -230,57 +238,96 @@
           hasConfirmedLive = true;
         }
 
-        // 2. 센서 값 카드 먼저 최신화 (끊겼을 때도 마지막 측정값은 흐리게 표시)
         let badCount = 0;
         let warnCount = 0;
         let waitCount = 0;
+        const sensorErrors = [];
 
-        if (data.temp !== undefined) {
-          document.getElementById("temp-val").textContent = Number(data.temp).toFixed(1);
-          if (data.temp >= 18 && data.temp <= 26) setBadge("temp-badge", "적정", "good");
-          else { setBadge("temp-badge", "주의", "bad"); warnCount++; }
+        // 1. 온도 & 습도 (BME280)
+        if (data.bme_ok === false) {
+          setCardError("temp-card", true);
+          setCardError("humi-card", true);
+          document.getElementById("temp-val").textContent = "ERR";
+          document.getElementById("humi-val").textContent = "ERR";
+          setBadge("temp-badge", "센서 끊김", "bad");
+          setBadge("humi-badge", "센서 끊김", "bad");
+          sensorErrors.push("온습도(BME280)");
+        } else {
+          setCardError("temp-card", false);
+          setCardError("humi-card", false);
+          if (data.temp !== undefined) {
+            document.getElementById("temp-val").textContent = Number(data.temp).toFixed(1);
+            if (data.temp >= 18 && data.temp <= 26) setBadge("temp-badge", "적정", "good");
+            else { setBadge("temp-badge", "주의", "bad"); warnCount++; }
+          }
+          if (data.humi !== undefined) {
+            document.getElementById("humi-val").textContent = Math.round(data.humi);
+            if (data.humi >= 40 && data.humi <= 60) setBadge("humi-badge", "적정", "good");
+            else { setBadge("humi-badge", "건조/다습", "bad"); warnCount++; }
+          }
         }
 
-        if (data.humi !== undefined) {
-          document.getElementById("humi-val").textContent = Math.round(data.humi);
-          if (data.humi >= 40 && data.humi <= 60) setBadge("humi-badge", "적정", "good");
-          else { setBadge("humi-badge", "건조/다습", "bad"); warnCount++; }
+        // 2. 이산화탄소 (CM1107N)
+        if (data.co2_ok === false) {
+          setCardError("co2-card", true);
+          document.getElementById("co2-val").textContent = "ERR";
+          setBadge("co2-badge", "센서 끊김", "bad");
+          sensorErrors.push("CO₂(CM1107N)");
+        } else {
+          setCardError("co2-card", false);
+          if (isWarmingUp(data.co2_state)) {
+            document.getElementById("co2-val").textContent = "--";
+            setBadge("co2-badge", data.co2_state, "wait");
+            waitCount++;
+          } else if (data.co2 !== undefined) {
+            document.getElementById("co2-val").textContent = data.co2;
+            if (data.co2 <= 700) setBadge("co2-badge", "좋음", "good");
+            else if (data.co2 <= 1000) { setBadge("co2-badge", "보통", "warn"); warnCount++; }
+            else { setBadge("co2-badge", "환기 필요", "bad"); badCount++; }
+          }
         }
 
-        if (isWarmingUp(data.co2_state)) {
-          document.getElementById("co2-val").textContent = "--";
-          setBadge("co2-badge", data.co2_state, "wait");
-          waitCount++;
-        } else if (data.co2 !== undefined) {
-          document.getElementById("co2-val").textContent = data.co2;
-          if (data.co2 <= 700) setBadge("co2-badge", "좋음", "good");
-          else if (data.co2 <= 1000) { setBadge("co2-badge", "보통", "warn"); warnCount++; }
-          else { setBadge("co2-badge", "환기 필요", "bad"); badCount++; }
+        // 3. 초미세먼지 (PM2009)
+        if (data.pm_ok === false) {
+          setCardError("pm25-card", true);
+          document.getElementById("pm25-val").textContent = "ERR";
+          setBadge("pm25-badge", "센서 끊김", "bad");
+          sensorErrors.push("미세먼지(PM2009)");
+        } else {
+          setCardError("pm25-card", false);
+          if (isWarmingUp(data.pm_state)) {
+            document.getElementById("pm25-val").textContent = "--";
+            setBadge("pm25-badge", data.pm_state, "wait");
+            waitCount++;
+          } else if (data.pm25 !== undefined) {
+            document.getElementById("pm25-val").textContent = data.pm25;
+            if (data.pm25 <= 15) setBadge("pm25-badge", "좋음", "good");
+            else if (data.pm25 <= 35) { setBadge("pm25-badge", "보통", "warn"); warnCount++; }
+            else { setBadge("pm25-badge", "나쁨", "bad"); badCount++; }
+          }
         }
 
-        if (isWarmingUp(data.pm_state)) {
-          document.getElementById("pm25-val").textContent = "--";
-          setBadge("pm25-badge", data.pm_state, "wait");
-          waitCount++;
-        } else if (data.pm25 !== undefined) {
-          document.getElementById("pm25-val").textContent = data.pm25;
-          if (data.pm25 <= 15) setBadge("pm25-badge", "좋음", "good");
-          else if (data.pm25 <= 35) { setBadge("pm25-badge", "보통", "warn"); warnCount++; }
-          else { setBadge("pm25-badge", "나쁨", "bad"); badCount++; }
+        // 4. 포름알데히드 (HCHO)
+        if (data.hcho_ok === false) {
+          setCardError("hcho-card", true);
+          document.getElementById("hcho-val").textContent = "ERR";
+          setBadge("hcho-badge", "센서 끊김", "bad");
+          sensorErrors.push("유해가스(HCHO)");
+        } else {
+          setCardError("hcho-card", false);
+          if (isWarmingUp(data.hcho_state)) {
+            document.getElementById("hcho-val").textContent = "--";
+            setBadge("hcho-badge", data.hcho_state, "wait");
+            waitCount++;
+          } else if (data.hcho !== undefined) {
+            document.getElementById("hcho-val").textContent = Number(data.hcho).toFixed(3);
+            if (data.hcho <= 0.05) setBadge("hcho-badge", "안전", "good");
+            else if (data.hcho <= 0.10) { setBadge("hcho-badge", "보통", "warn"); warnCount++; }
+            else { setBadge("hcho-badge", "환기 필요", "bad"); badCount++; }
+          }
         }
 
-        if (isWarmingUp(data.hcho_state)) {
-          document.getElementById("hcho-val").textContent = "--";
-          setBadge("hcho-badge", data.hcho_state, "wait");
-          waitCount++;
-        } else if (data.hcho !== undefined) {
-          document.getElementById("hcho-val").textContent = Number(data.hcho).toFixed(3);
-          if (data.hcho <= 0.05) setBadge("hcho-badge", "안전", "good");
-          else if (data.hcho <= 0.10) { setBadge("hcho-badge", "보통", "warn"); warnCount++; }
-          else { setBadge("hcho-badge", "환기 필요", "bad"); badCount++; }
-        }
-
-        // 3. Wi-Fi 끊김(오프라인) 판정
+        // Wi-Fi 끊김(오프라인) 판정
         const deviceTsMs = parseDeviceTimestamp(data.timestamp);
         const sinceLastChangeMs = now - lastChangedAt;
         const isRecentlyChanged = hasConfirmedLive && (sinceLastChangeMs <= OFFLINE_LIMIT_MS);
@@ -298,13 +345,11 @@
           }
         }
 
-        // 하단 시각 표시
         const deviceTimeLabel = data.timestamp ? data.timestamp : "기록 없음";
         const nowStr = new Date().toLocaleTimeString("ko-KR");
         document.getElementById("last-update").innerHTML =
           "기기 마지막 전송: " + deviceTimeLabel + "<br>화면 확인 시각: " + nowStr;
 
-        // 4. Wi-Fi 끊김 상태일 때 화면 처리
         if (isDeviceOffline) {
           wasOffline = true;
           recoveryEl.classList.remove("show");
@@ -319,10 +364,8 @@
           return;
         }
 
-        // 5. 정상 연결 상태일 때 화면 처리
         grid.classList.remove("dimmed");
 
-        // 끊겼다가 방금 다시 연결되었거나, 아두이노 status에 '다시 연결'이 들어온 경우 15초간 복구 안내 표시
         if (wasOffline || (data.status && String(data.status).includes("다시 연결"))) {
           if (wasOffline) {
             recoveryNoticeUntil = now + 15000;
@@ -341,8 +384,12 @@
         const liveSec = Math.floor(sinceLastChangeMs / 1000);
         setConnPill(true, "기기 온라인 · 실시간 수신 중 (" + liveSec + "초 전)");
 
-        // 종합 상태 배너 업데이트
-        if (badCount > 0) {
+        // 종합 상태 배너 (개별 센서 끊김이 있으면 최우선 경고)
+        if (sensorErrors.length > 0) {
+          banner.className = "banner offline";
+          bStatus.textContent = "⚠️ 센서 연결 오류 감지";
+          bDesc.textContent = sensorErrors.join(", ") + " 센서에서 데이터가 수신되지 않고 있습니다. 배선 상태를 확인해 주세요.";
+        } else if (badCount > 0) {
           banner.className = "banner bad";
           bStatus.textContent = "환기 권장 (나쁨)";
           bDesc.textContent = "일부 공기질 수치가 기준치를 초과했습니다. 창문을 열어 환기해 주세요.";
