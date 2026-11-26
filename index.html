@@ -40,8 +40,9 @@
     }
     .recovery-alert.show { display: block; }
 
+    /* 종합 상태 및 행동 지침 배너 */
     .banner {
-      background: #fff; border-radius: 16px; padding: 22px 16px; text-align: center;
+      background: #fff; border-radius: 16px; padding: 20px 16px; text-align: center;
       box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 16px;
       border-top: 6px solid #10b981; transition: border-color 0.3s, background 0.3s;
     }
@@ -51,14 +52,29 @@
     .banner.wait { border-top-color: #3b82f6; }
     .banner.offline { border-top-color: #dc2626; background: #fef2f2; }
 
-    .banner-label { font-size: 13px; color: #6b7280; margin-bottom: 6px; }
-    .banner-status { font-size: 23px; font-weight: 800; margin-bottom: 8px; }
+    .banner-top { display: flex; justify-content: center; align-items: center; gap: 6px; margin-bottom: 8px; }
+    .banner-label { font-size: 12px; color: #6b7280; font-weight: 600; }
+    .priority-tag {
+      display: none; font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 999px;
+      background: #e5e7eb; color: #374151;
+    }
+    .priority-tag.show { display: inline-block; }
+    .banner.good .priority-tag { background: #d1fae5; color: #065f46; }
+    .banner.warn .priority-tag { background: #fef3c7; color: #92400e; }
+    .banner.bad  .priority-tag { background: #fee2e2; color: #991b1b; }
+
+    .banner-status { font-size: 19px; font-weight: 800; margin-bottom: 8px; line-height: 1.35; word-break: keep-all; }
     .banner.good .banner-status { color: #059669; }
     .banner.warn .banner-status { color: #d97706; }
     .banner.bad  .banner-status { color: #dc2626; }
     .banner.wait .banner-status { color: #2563eb; }
     .banner.offline .banner-status { color: #b91c1c; }
-    .banner-desc { font-size: 13px; color: #4b5563; line-height: 1.45; }
+
+    .banner-desc {
+      font-size: 12.5px; color: #4b5563; line-height: 1.5; word-break: keep-all;
+      background: #f9fafb; border-radius: 10px; padding: 10px 12px; margin-top: 8px;
+    }
+    .banner.offline .banner-desc { background: #fee2e2; color: #7f1d1d; }
 
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; transition: opacity 0.3s; }
     .grid.dimmed { opacity: 0.48; }
@@ -106,8 +122,12 @@
       ✅ Wi-Fi가 다시 연결되어 누락 데이터가 자동 복구되었습니다.
     </div>
 
+    <!-- 종합 상태 및 복합 조건 행동 지침 배너 -->
     <div id="banner" class="banner wait">
-      <div class="banner-label">현재 실내 공기질 종합 상태</div>
+      <div class="banner-top">
+        <span class="banner-label">맞춤형 공기질 행동 지침</span>
+        <span id="priority-tag" class="priority-tag"></span>
+      </div>
       <div id="banner-status" class="banner-status">데이터 불러오는 중...</div>
       <div id="banner-desc" class="banner-desc">센서와 연결을 확인하고 있습니다.</div>
     </div>
@@ -159,7 +179,135 @@
 
     function isWarmingUp(stateText) {
       if (!stateText) return false;
-      return stateText.includes("예열") || stateText.includes("안정화") || stateText.includes("워밍업");
+      const s = String(stateText);
+      return s.includes("예열") || s.includes("안정화") || s.includes("워밍업");
+    }
+
+    function isAlcoholInterference(data) {
+      if (data.alcohol_interference === true || data.hcho_alcohol === true || data.is_alcohol === true) {
+        return true;
+      }
+      const hs = data.hcho_state ? String(data.hcho_state) : "";
+      return hs.includes("알코올") || hs.includes("간섭");
+    }
+
+    // 복합 조건 분기 로직 (1~6순위)
+    function evaluateActionGuide(data) {
+      // 1) 아두이노가 action_guide를 직접 Firebase에 보낸 경우 최우선 표시
+      if (data.action_guide && String(data.action_guide).trim() !== "") {
+        const guide = String(data.action_guide).trim();
+        if (guide.includes("유해가스") || guide.includes("HCHO")) {
+          return {
+            priority: "1순위",
+            level: "bad",
+            title: guide,
+            reason: "발암성 화학물질은 공기청정기 헤파필터로 제거 불가하므로 외부 배기가 필수입니다."
+          };
+        }
+        if (guide.includes("동시 초과")) {
+          return {
+            priority: "3순위",
+            level: "bad",
+            title: guide,
+            reason: "CO₂ 해소와 입자상 물질 포집을 병행해야 하는 복합 오염 상태입니다."
+          };
+        }
+        if (guide.includes("이산화탄소 초과") || guide.includes("자연 환기")) {
+          return {
+            priority: "2순위",
+            level: "warn",
+            title: guide,
+            reason: "실내 미세먼지가 양호하므로 창문을 열어 CO₂를 빠르게 배출하세요."
+          };
+        }
+        if (guide.includes("미세먼지 초과") || guide.includes("창문 개방 금지")) {
+          return {
+            priority: "4순위",
+            level: "warn",
+            title: guide,
+            reason: "CO₂가 정상이므로 창문을 열지 않고 내부 순환 청정만 가동하세요."
+          };
+        }
+        if (guide.includes("고온다습") || guide.includes("제습기")) {
+          return {
+            priority: "5순위",
+            level: "warn",
+            title: guide,
+            reason: "미생물·곰팡이 번식 및 HCHO 방출량 증가를 억제해야 합니다."
+          };
+        }
+        return {
+          priority: "6순위",
+          level: "good",
+          title: guide,
+          reason: "정상 쾌적 상태입니다."
+        };
+      }
+
+      // 2) Firebase에 action_guide가 아직 없을 때 웹에서 1~6순위 자동 산출
+      const hchoValid = data.hcho !== undefined && !isWarmingUp(data.hcho_state) && data.hcho_ok !== false;
+      const co2Valid  = data.co2  !== undefined && !isWarmingUp(data.co2_state)  && data.co2_ok  !== false;
+      const pmValid   = data.pm25 !== undefined && !isWarmingUp(data.pm_state)   && data.pm_ok   !== false;
+      const bmeValid  = data.temp !== undefined && data.humi !== undefined && data.bme_ok !== false;
+
+      const hcho = hchoValid ? Number(data.hcho) : 0;
+      const co2  = co2Valid  ? Number(data.co2)  : 0;
+      const pm25 = pmValid   ? Number(data.pm25) : 0;
+      const temp = bmeValid  ? Number(data.temp) : 0;
+      const humi = bmeValid  ? Number(data.humi) : 0;
+
+      // 1순위: HCHO > 0.10 (단, 알코올 일시 간섭 제외)
+      if (hchoValid && hcho > 0.10 && !isAlcoholInterference(data)) {
+        return {
+          priority: "1순위",
+          level: "bad",
+          title: "유해가스(HCHO) 초과: 즉시 창문 개방 및 강제 배기 실행",
+          reason: "발암성 화학물질은 공기청정기 헤파필터로 제거 불가하므로 외부 배기가 필수입니다."
+        };
+      }
+      // 2순위: CO2 > 1000 AND PM2.5 <= 35
+      if (co2Valid && co2 > 1000 && (!pmValid || pm25 <= 35)) {
+        return {
+          priority: "2순위",
+          level: "warn",
+          title: "이산화탄소 초과(미세먼지 양호): 자연 환기(창문 개방) 실행",
+          reason: "실내 미세먼지가 양호하므로 창문을 열어 CO₂를 빠르게 배출하세요."
+        };
+      }
+      // 3순위: CO2 > 1000 AND PM2.5 > 35
+      if (co2Valid && pmValid && co2 > 1000 && pm25 > 35) {
+        return {
+          priority: "3순위",
+          level: "bad",
+          title: "CO₂·미세먼지 동시 초과: 환기 후 창문 닫고 공기청정기 강풍 가동",
+          reason: "CO₂ 해소와 입자상 물질 포집을 병행해야 하는 복합 오염 상태입니다."
+        };
+      }
+      // 4순위: CO2 <= 1000 AND PM2.5 > 35
+      if (pmValid && pm25 > 35 && (!co2Valid || co2 <= 1000)) {
+        return {
+          priority: "4순위",
+          level: "warn",
+          title: "미세먼지 초과(CO₂ 양호): 창문 개방 금지 및 공기청정기 강풍 가동",
+          reason: "CO₂가 정상이므로 창문을 열지 않고 내부 순환 청정만 가동하세요."
+        };
+      }
+      // 5순위: 습도 >= 70% AND 온도 >= 26°C
+      if (bmeValid && humi >= 70 && temp >= 26) {
+        return {
+          priority: "5순위",
+          level: "warn",
+          title: "고온다습(결로·곰팡이 주의): 제습기 또는 냉방·순환 팬 가동",
+          reason: "미생물·곰팡이 번식 및 HCHO 방출량 증가를 억제해야 합니다."
+        };
+      }
+      // 6순위: 위 조건 모두 해당 없음
+      return {
+        priority: "6순위",
+        level: "good",
+        title: "전 항목 양호: 현재 실내 공기질 유지(주기적 환기 권장)",
+        reason: "정상 쾌적 상태입니다."
+      };
     }
 
     function setBadge(id, text, level) {
@@ -203,6 +351,7 @@
 
     async function fetchData() {
       const banner = document.getElementById("banner");
+      const pTag = document.getElementById("priority-tag");
       const bStatus = document.getElementById("banner-status");
       const bDesc = document.getElementById("banner-desc");
       const grid = document.getElementById("cards-grid");
@@ -226,7 +375,8 @@
           bme_ok: data.bme_ok,
           co2_ok: data.co2_ok,
           pm_ok: data.pm_ok,
-          hcho_ok: data.hcho_ok
+          hcho_ok: data.hcho_ok,
+          action_guide: data.action_guide
         });
 
         if (lastSignature === null) {
@@ -238,8 +388,6 @@
           hasConfirmedLive = true;
         }
 
-        let badCount = 0;
-        let warnCount = 0;
         let waitCount = 0;
         const sensorErrors = [];
 
@@ -257,13 +405,13 @@
           setCardError("humi-card", false);
           if (data.temp !== undefined) {
             document.getElementById("temp-val").textContent = Number(data.temp).toFixed(1);
-            if (data.temp >= 18 && data.temp <= 26) setBadge("temp-badge", "적정", "good");
-            else { setBadge("temp-badge", "주의", "bad"); warnCount++; }
+            if (data.temp >= 18 && data.temp < 26) setBadge("temp-badge", "적정", "good");
+            else setBadge("temp-badge", data.temp >= 26 ? "고온 주의" : "저온 주의", "warn");
           }
           if (data.humi !== undefined) {
             document.getElementById("humi-val").textContent = Math.round(data.humi);
-            if (data.humi >= 40 && data.humi <= 60) setBadge("humi-badge", "적정", "good");
-            else { setBadge("humi-badge", "건조/다습", "bad"); warnCount++; }
+            if (data.humi >= 40 && data.humi < 70) setBadge("humi-badge", "적정", "good");
+            else setBadge("humi-badge", data.humi >= 70 ? "다습 주의" : "건조", "warn");
           }
         }
 
@@ -282,8 +430,8 @@
           } else if (data.co2 !== undefined) {
             document.getElementById("co2-val").textContent = data.co2;
             if (data.co2 <= 700) setBadge("co2-badge", "좋음", "good");
-            else if (data.co2 <= 1000) { setBadge("co2-badge", "보통", "warn"); warnCount++; }
-            else { setBadge("co2-badge", "환기 필요", "bad"); badCount++; }
+            else if (data.co2 <= 1000) setBadge("co2-badge", "보통", "warn");
+            else setBadge("co2-badge", "초과 (환기)", "bad");
           }
         }
 
@@ -302,8 +450,8 @@
           } else if (data.pm25 !== undefined) {
             document.getElementById("pm25-val").textContent = data.pm25;
             if (data.pm25 <= 15) setBadge("pm25-badge", "좋음", "good");
-            else if (data.pm25 <= 35) { setBadge("pm25-badge", "보통", "warn"); warnCount++; }
-            else { setBadge("pm25-badge", "나쁨", "bad"); badCount++; }
+            else if (data.pm25 <= 35) setBadge("pm25-badge", "보통", "warn");
+            else setBadge("pm25-badge", "초과 (청정)", "bad");
           }
         }
 
@@ -321,9 +469,15 @@
             waitCount++;
           } else if (data.hcho !== undefined) {
             document.getElementById("hcho-val").textContent = Number(data.hcho).toFixed(3);
-            if (data.hcho <= 0.05) setBadge("hcho-badge", "안전", "good");
-            else if (data.hcho <= 0.10) { setBadge("hcho-badge", "보통", "warn"); warnCount++; }
-            else { setBadge("hcho-badge", "환기 필요", "bad"); badCount++; }
+            if (isAlcoholInterference(data)) {
+              setBadge("hcho-badge", "알코올 간섭 (제외)", "wait");
+            } else if (data.hcho <= 0.05) {
+              setBadge("hcho-badge", "안전", "good");
+            } else if (data.hcho <= 0.10) {
+              setBadge("hcho-badge", "보통", "warn");
+            } else {
+              setBadge("hcho-badge", "초과 (배기)", "bad");
+            }
           }
         }
 
@@ -357,6 +511,7 @@
           setConnPill(false, "기기 오프라인 (Wi-Fi 끊김) · " + formatElapsed(offlineDurationMs) + " 경과");
 
           banner.className = "banner offline";
+          pTag.className = "priority-tag";
           bStatus.textContent = "⚠️ 장치 Wi-Fi 연결 끊김";
           bDesc.textContent =
             formatElapsed(offlineDurationMs) +
@@ -375,42 +530,34 @@
           }
         }
 
-        if (now < recoveryNoticeUntil) {
-          recoveryEl.classList.add("show");
-        } else {
-          recoveryEl.classList.remove("show");
-        }
+        if (now < recoveryNoticeUntil) recoveryEl.classList.add("show");
+        else recoveryEl.classList.remove("show");
 
         const liveSec = Math.floor(sinceLastChangeMs / 1000);
         setConnPill(true, "기기 온라인 · 실시간 수신 중 (" + liveSec + "초 전)");
 
-        // 종합 상태 배너 (개별 센서 끊김이 있으면 최우선 경고)
+        // 종합 배너 표시: 1) 개별 센서 끊김 최우선, 2) 복합 조건 분기 로직(action_guide)
         if (sensorErrors.length > 0) {
           banner.className = "banner offline";
+          pTag.className = "priority-tag";
           bStatus.textContent = "⚠️ 센서 연결 오류 감지";
           bDesc.textContent = sensorErrors.join(", ") + " 센서에서 데이터가 수신되지 않고 있습니다. 배선 상태를 확인해 주세요.";
-        } else if (badCount > 0) {
-          banner.className = "banner bad";
-          bStatus.textContent = "환기 권장 (나쁨)";
-          bDesc.textContent = "일부 공기질 수치가 기준치를 초과했습니다. 창문을 열어 환기해 주세요.";
-        } else if (waitCount > 0) {
-          banner.className = "banner wait";
-          bStatus.textContent = "센서 예열 / 안정화 중";
-          bDesc.textContent = "정확한 측정을 위해 일부 센서가 예열 및 안정화를 진행하고 있습니다.";
-        } else if (warnCount > 0) {
-          banner.className = "banner warn";
-          bStatus.textContent = "보통 (주의)";
-          bDesc.textContent = "전반적으로 무난하지만 실내 공기 상태에 관심을 기울여 주세요.";
         } else {
-          banner.className = "banner good";
-          bStatus.textContent = "쾌적함 (좋음)";
-          bDesc.textContent = "모든 실내 공기질 지표가 안전하고 쾌적한 상태입니다.";
+          const guide = evaluateActionGuide(data);
+          banner.className = "banner " + guide.level;
+          pTag.textContent = guide.priority;
+          pTag.className = "priority-tag show";
+          bStatus.textContent = guide.title;
+          bDesc.textContent =
+            (waitCount > 0 ? "※ 일부 센서 예열/안정화 중 · " : "") +
+            "공학 근거: " + guide.reason;
         }
       } catch (err) {
         console.error("데이터 로드 실패:", err);
         grid.classList.add("dimmed");
         setConnPill(false, "네트워크 오류 · 서버 접속 불가");
         banner.className = "banner offline";
+        pTag.className = "priority-tag";
         bStatus.textContent = "⚠️ 네트워크 연결 오류";
         bDesc.textContent = "스마트폰 또는 PC의 인터넷 연결을 확인해 주세요.";
       }
